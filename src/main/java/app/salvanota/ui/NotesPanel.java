@@ -24,15 +24,13 @@ import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.Font;
+import java.awt.FlowLayout;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
-import java.awt.FlowLayout;
-import java.awt.Rectangle;
 import java.awt.Window;
-import java.awt.event.MouseAdapter;
-import java.awt.event.MouseEvent;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Editor note e archivio con layout a due pannelli.
@@ -60,35 +58,36 @@ public final class NotesPanel extends JPanel {
         JButton saveButton = new JButton("Salva nota");
         saveButton.putClientProperty("JButton.buttonType", "roundRect");
 
+        JButton newButton = new JButton("Nuova nota");
+        newButton.setEnabled(false);
+        newButton.putClientProperty("JButton.buttonType", "roundRect");
+
+        TitledBorder editorTitle = BorderFactory.createTitledBorder(
+                BorderFactory.createEmptyBorder(),
+                " Nuova nota ",
+                TitledBorder.LEADING,
+                TitledBorder.DEFAULT_POSITION,
+                UiConstants.sectionTitleFont()
+        );
+        AtomicReference<Note> editingNote = new AtomicReference<>();
+
         DefaultListModel<Note> listModel = new DefaultListModel<>();
         JList<Note> list = new JList<>(listModel);
         list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         list.setFixedCellHeight(36);
         list.setCellRenderer(new NoteListCellRenderer());
 
-        list.addMouseListener(new MouseAdapter() {
-            @Override
-            public void mouseClicked(MouseEvent e) {
-                int idx = list.locationToIndex(e.getPoint());
-                if (idx < 0 || idx >= listModel.getSize()) {
-                    return;
-                }
-                Rectangle cell = list.getCellBounds(idx, idx);
-                if (cell == null || !cell.contains(e.getPoint())) {
-                    return;
-                }
-                new NoteReaderDialog(window, listModel.getElementAt(idx)).setVisible(true);
-            }
-        });
-
         JButton deleteButton = new JButton("Elimina nota");
         deleteButton.setEnabled(false);
         deleteButton.putClientProperty("JButton.buttonType", "roundRect");
+        list.addListSelectionListener(e ->
+                loadSelectedNote(e, list, titleField, bodyField, saveButton, newButton, editorTitle, editingNote));
         list.addListSelectionListener(e -> updateDeleteButtonState(e, list, deleteButton));
         deleteButton.addActionListener(e ->
-                deleteSelectedNote(list, listModel, deleteButton));
+                deleteSelectedNote(list, listModel, deleteButton, titleField, bodyField, saveButton,
+                        newButton, editorTitle, editingNote));
 
-        JPanel editorCard = buildEditorCard(titleField, bodyField, saveButton);
+        JPanel editorCard = buildEditorCard(titleField, bodyField, saveButton, newButton, editorTitle);
         JScrollPane listScroll = new JScrollPane(list);
         listScroll.setMinimumSize(new Dimension(200, 120));
 
@@ -100,7 +99,10 @@ public final class NotesPanel extends JPanel {
 
         add(split, BorderLayout.CENTER);
 
-        saveButton.addActionListener(e -> saveNote(titleField, bodyField, saveButton, listModel));
+        saveButton.addActionListener(e ->
+                saveNote(titleField, bodyField, saveButton, listModel, list, editingNote));
+        newButton.addActionListener(e ->
+                clearEditor(list, titleField, bodyField, saveButton, newButton, editorTitle, editingNote));
         reloadList(listModel);
 
         JLabel banner = new JLabel("Archivio locale · SQLite");
@@ -129,7 +131,10 @@ public final class NotesPanel extends JPanel {
         return wrap;
     }
 
-    private void deleteSelectedNote(JList<Note> list, DefaultListModel<Note> listModel, JButton deleteButton) {
+    private void deleteSelectedNote(JList<Note> list, DefaultListModel<Note> listModel, JButton deleteButton,
+                                    JTextField titleField, JTextArea bodyField, JButton saveButton,
+                                    JButton newButton, TitledBorder editorTitle,
+                                    AtomicReference<Note> editingNote) {
         Note selected = list.getSelectedValue();
         if (selected == null) {
             Dialogs.warn(window, "Seleziona una nota dall'elenco.");
@@ -154,7 +159,7 @@ public final class NotesPanel extends JPanel {
             protected void done() {
                 try {
                     applyList(listModel, get());
-                    list.clearSelection();
+                    clearEditor(list, titleField, bodyField, saveButton, newButton, editorTitle, editingNote);
                 } catch (Exception ex) {
                     Throwable t = ex.getCause() != null ? ex.getCause() : ex;
                     Dialogs.error(window, t.getMessage());
@@ -172,17 +177,31 @@ public final class NotesPanel extends JPanel {
         deleteButton.setEnabled(list.getSelectedValue() != null);
     }
 
-    private JPanel buildEditorCard(JTextField titleField, JTextArea bodyField, JButton saveButton) {
+    private void loadSelectedNote(ListSelectionEvent e, JList<Note> list, JTextField titleField, JTextArea bodyField,
+                                  JButton saveButton, JButton newButton, TitledBorder editorTitle,
+                                  AtomicReference<Note> editingNote) {
+        if (e.getValueIsAdjusting()) {
+            return;
+        }
+        Note selected = list.getSelectedValue();
+        if (selected == null) {
+            return;
+        }
+        editingNote.set(selected);
+        titleField.setText(selected.getTitolo());
+        bodyField.setText(selected.getDescrizione());
+        bodyField.setCaretPosition(0);
+        saveButton.setText("Aggiorna nota");
+        newButton.setEnabled(true);
+        editorTitle.setTitle(" Modifica nota ");
+        repaint();
+    }
+
+    private JPanel buildEditorCard(JTextField titleField, JTextArea bodyField, JButton saveButton,
+                                   JButton newButton, TitledBorder editorTitle) {
         JPanel card = new JPanel(new BorderLayout(0, UiConstants.GAP_MD));
-        TitledBorder tb = BorderFactory.createTitledBorder(
-                BorderFactory.createEmptyBorder(),
-                " Nuova nota ",
-                TitledBorder.LEADING,
-                TitledBorder.DEFAULT_POSITION,
-                UiConstants.sectionTitleFont()
-        );
         card.setBorder(BorderFactory.createCompoundBorder(
-                tb,
+                editorTitle,
                 new EmptyBorder(UiConstants.GAP_MD, UiConstants.GAP_LG, UiConstants.GAP_LG, UiConstants.GAP_LG)
         ));
 
@@ -222,14 +241,19 @@ public final class NotesPanel extends JPanel {
         gbc.weighty = 0;
         gbc.anchor = GridBagConstraints.EAST;
         gbc.insets = new Insets(UiConstants.GAP_SM, 0, 0, 0);
-        fields.add(saveButton, gbc);
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, UiConstants.GAP_SM, 0));
+        actions.setOpaque(false);
+        actions.add(newButton);
+        actions.add(saveButton);
+        fields.add(actions, gbc);
 
         card.add(fields, BorderLayout.CENTER);
         return card;
     }
 
     private void saveNote(JTextField titleField, JTextArea bodyField, JButton saveButton,
-                          DefaultListModel<Note> listModel) {
+                          DefaultListModel<Note> listModel, JList<Note> list,
+                          AtomicReference<Note> editingNote) {
         String titolo = titleField.getText().trim();
         String descrizione = bodyField.getText().trim();
         if (titolo.isEmpty()) {
@@ -239,9 +263,15 @@ public final class NotesPanel extends JPanel {
 
         saveButton.setEnabled(false);
         new SwingWorker<List<Note>, Void>() {
+            private long savedId;
+
             @Override
             protected List<Note> doInBackground() throws Exception {
-                repository.save(new Note(titolo, descrizione));
+                Note selected = editingNote.get();
+                Note note = selected == null
+                        ? new Note(titolo, descrizione)
+                        : new Note(selected.getId(), titolo, descrizione);
+                savedId = repository.save(note);
                 return repository.findAll();
             }
 
@@ -250,14 +280,32 @@ public final class NotesPanel extends JPanel {
                 saveButton.setEnabled(true);
                 try {
                     applyList(listModel, get());
-                    titleField.setText("");
-                    bodyField.setText("");
+                    if (editingNote.get() == null) {
+                        titleField.setText("");
+                        bodyField.setText("");
+                        list.clearSelection();
+                    } else {
+                        selectNoteById(list, listModel, savedId);
+                    }
                 } catch (Exception ex) {
                     Throwable t = ex.getCause() != null ? ex.getCause() : ex;
                     Dialogs.error(window, t.getMessage());
                 }
             }
         }.execute();
+    }
+
+    private void clearEditor(JList<Note> list, JTextField titleField, JTextArea bodyField, JButton saveButton,
+                             JButton newButton, TitledBorder editorTitle, AtomicReference<Note> editingNote) {
+        editingNote.set(null);
+        list.clearSelection();
+        titleField.setText("");
+        bodyField.setText("");
+        saveButton.setText("Salva nota");
+        newButton.setEnabled(false);
+        editorTitle.setTitle(" Nuova nota ");
+        repaint();
+        titleField.requestFocusInWindow();
     }
 
     private void reloadList(DefaultListModel<Note> listModel) {
@@ -283,6 +331,16 @@ public final class NotesPanel extends JPanel {
         listModel.clear();
         for (Note n : notes) {
             listModel.addElement(n);
+        }
+    }
+
+    private static void selectNoteById(JList<Note> list, DefaultListModel<Note> listModel, long id) {
+        for (int i = 0; i < listModel.getSize(); i++) {
+            if (listModel.getElementAt(i).getId() == id) {
+                list.setSelectedIndex(i);
+                list.ensureIndexIsVisible(i);
+                return;
+            }
         }
     }
 
